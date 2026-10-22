@@ -342,12 +342,12 @@ enum UsageFormatter {
 
     static func statusItemTitle(from snapshot: UsageSnapshot) -> String {
         if let total = snapshot.totalPercentUsed {
-            return "额度 \(percent(total))"
+            return "Cursor \(percent(total))"
         }
         if snapshot.isUnlimited == true {
-            return "额度 不限量"
+            return "Cursor 不限量"
         }
-        return "额度"
+        return "Cursor 额度"
     }
 
     static func usedRatio(from snapshot: UsageSnapshot) -> Double? {

@@ -58,14 +58,25 @@ final class OverlayController: NSObject {
 
     private func buildStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "额度"
-        item.button?.toolTip = "Cursor 额度条"
-        let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "立即刷新", action: #selector(refreshFromMenu), keyEquivalent: "r"))
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "退出额度条", action: #selector(quit), keyEquivalent: "q"))
-        item.menu = menu
+        item.button?.title = "Cursor 额度"
+        item.button?.toolTip = "Cursor 额度，不覆盖其他菜单栏用量项"
         statusItem = item
+        rebuildMenu()
+    }
+
+    private func rebuildMenu() {
+        let menu = NSMenu()
+        let info = NSMenuItem(title: lastLine, action: nil, keyEquivalent: "")
+        info.isEnabled = false
+        menu.addItem(info)
+        menu.addItem(NSMenuItem.separator())
+        let refreshItem = NSMenuItem(title: "立即刷新", action: #selector(refreshFromMenu), keyEquivalent: "r")
+        refreshItem.target = self
+        menu.addItem(refreshItem)
+        let quitItem = NSMenuItem(title: "退出额度条", action: #selector(quit), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+        statusItem?.menu = menu
     }
 
     private func refresh() {
@@ -79,6 +90,7 @@ final class OverlayController: NSObject {
                     appendLog("usage ok \(line)")
                     self?.apply(line: line, ratio: ratio, isError: false)
                     self?.statusItem?.button?.title = title
+                    self?.rebuildMenu()
                 }
             } catch {
                 let message = (error as? QuotaError)?.description ?? "无法读取额度：\(error.localizedDescription)"
@@ -86,7 +98,8 @@ final class OverlayController: NSObject {
                 DispatchQueue.main.async {
                     appendLog("usage error \(message)")
                     self?.apply(line: "Cursor 额度  ·  \(message)", ratio: nil, isError: true)
-                    self?.statusItem?.button?.title = "额度 错误"
+                    self?.statusItem?.button?.title = "Cursor 错误"
+                    self?.rebuildMenu()
                 }
             }
         }
@@ -101,8 +114,6 @@ final class OverlayController: NSObject {
 }
 
 /// Overlay that can never become key and always reports click-through.
-/// AppKit resets `ignoresMouseEvents` when `level` changes; the setter
-/// forces it back on so ribbon / header clicks reach the app underneath.
 final class ClickThroughPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
@@ -114,16 +125,16 @@ final class ClickThroughPanel: NSPanel {
 }
 
 enum BarPlacement {
+    static let hairline: CGFloat = 2
+
     static func frame(on screen: NSScreen) -> NSRect {
-        let reserved = screen.frame.maxY - screen.visibleFrame.maxY
-        let height = reserved > 1 ? reserved : max(NSStatusBar.system.thickness, 22)
-        // Stay inside the menu-bar band. Never extend into the content
-        // area where WPS/Excel ribbon buttons live.
+        // 2pt at the physical top of the menu bar. Does not cover
+        // menu-extra text (Codex reminder, clock) or app ribbons.
         return NSRect(
             x: screen.frame.minX,
-            y: screen.frame.maxY - height,
+            y: screen.frame.maxY - hairline,
             width: screen.frame.width,
-            height: height
+            height: hairline
         )
     }
 }
@@ -169,7 +180,7 @@ final class BarWindow {
     }
 
     func update(line: String, ratio: Double?, isError: Bool) {
-        view.update(line: line, ratio: ratio, isError: isError)
+        view.update(ratio: ratio, isError: isError)
         enforceClickThrough()
     }
 
@@ -181,58 +192,22 @@ final class BarWindow {
 }
 
 final class BarView: NSView {
-    private let progressTrack = NSView()
     private let progressFill = NSView()
-    private let pill = NSView()
-    private let label = NSTextField(labelWithString: "")
+    private var progressFillWidth: NSLayoutConstraint!
+    private var currentRatio: Double?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
 
-        progressTrack.wantsLayer = true
         progressFill.wantsLayer = true
-        progressTrack.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.18).cgColor
-
-        pill.wantsLayer = true
-        pill.layer?.backgroundColor = NSColor(calibratedWhite: 0.07, alpha: 0.82).cgColor
-        pill.layer?.cornerRadius = 8
-
-        label.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        label.textColor = NSColor.white.withAlphaComponent(0.96)
-        label.alignment = .center
-        label.lineBreakMode = .byTruncatingMiddle
-        label.backgroundColor = .clear
-        label.isBezeled = false
-        label.drawsBackground = false
-        label.isEditable = false
-        label.isSelectable = false
-        label.isEnabled = false
-        label.refusesFirstResponder = true
-
-        [progressTrack, progressFill, pill, label].forEach {
-            $0.translatesAutoresizingMaskIntoConstraints = false
-            addSubview($0)
-        }
-
+        progressFill.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(progressFill)
         NSLayoutConstraint.activate([
-            progressTrack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            progressTrack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            progressTrack.topAnchor.constraint(equalTo: topAnchor),
-            progressTrack.heightAnchor.constraint(equalToConstant: 2),
-
-            progressFill.leadingAnchor.constraint(equalTo: progressTrack.leadingAnchor),
-            progressFill.topAnchor.constraint(equalTo: progressTrack.topAnchor),
-            progressFill.bottomAnchor.constraint(equalTo: progressTrack.bottomAnchor),
-
-            pill.centerXAnchor.constraint(equalTo: centerXAnchor),
-            pill.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 1),
-            pill.heightAnchor.constraint(equalToConstant: 20),
-
-            label.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 10),
-            label.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -10),
-            label.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
+            progressFill.leadingAnchor.constraint(equalTo: leadingAnchor),
+            progressFill.topAnchor.constraint(equalTo: topAnchor),
+            progressFill.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
         progressFillWidth = progressFill.widthAnchor.constraint(equalToConstant: 0)
         progressFillWidth.isActive = true
@@ -242,25 +217,12 @@ final class BarView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    private var progressFillWidth: NSLayoutConstraint!
-    private var currentRatio: Double?
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override var acceptsFirstResponder: Bool { false }
-    override var acceptsTouchEvents: Bool {
-        get { false }
-        set {}
-    }
 
-    func update(line: String, ratio: Double?, isError: Bool) {
-        label.stringValue = line
+    func update(ratio: Double?, isError: Bool) {
         currentRatio = isError ? nil : ratio
-        let color = accentColor(ratio: ratio, isError: isError)
-        progressFill.layer?.backgroundColor = color.cgColor
-        pill.layer?.backgroundColor = NSColor(calibratedWhite: 0.07, alpha: isError ? 0.88 : 0.82).cgColor
+        progressFill.layer?.backgroundColor = accentColor(ratio: ratio, isError: isError).cgColor
         progressFillWidth.constant = bounds.width * CGFloat(currentRatio ?? 0)
         layoutSubtreeIfNeeded()
     }
@@ -284,6 +246,5 @@ final class BarView: NSView {
     override func layout() {
         super.layout()
         progressFillWidth.constant = bounds.width * CGFloat(currentRatio ?? 0)
-        pill.layer?.cornerRadius = 8
     }
 }
