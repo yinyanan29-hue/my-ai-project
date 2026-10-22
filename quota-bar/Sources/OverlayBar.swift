@@ -50,7 +50,7 @@ final class OverlayController: NSObject {
         bars.forEach { $0.window.close() }
         bars = NSScreen.screens.map { screen in
             let bar = BarWindow(screen: screen)
-            appendLog("bar frame=\(NSStringFromRect(bar.window.frame)) screen=\(screen.localizedName)")
+            appendLog("bar frame=\(NSStringFromRect(bar.window.frame)) screen=\(screen.localizedName) clickThrough=\(bar.window.ignoresMouseEvents)")
             return bar
         }
         apply(line: lastLine, ratio: lastRatio, isError: lastIsError)
@@ -100,102 +100,139 @@ final class OverlayController: NSObject {
     }
 }
 
-final class BarWindow {
-    let window: NSPanel
-    private let view: BarView
+/// Overlay that can never become key and always reports click-through.
+/// AppKit resets `ignoresMouseEvents` when `level` changes; the setter
+/// forces it back on so ribbon / header clicks reach the app underneath.
+final class ClickThroughPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
 
-    init(screen: NSScreen) {
-        let height: CGFloat = 28
-        // Sit just under the menu bar so the strip stays at the top
-        // without covering Apple menu / clock. Clicks pass through.
-        let frame = NSRect(
+    override var ignoresMouseEvents: Bool {
+        get { true }
+        set { super.ignoresMouseEvents = true }
+    }
+}
+
+enum BarPlacement {
+    static func frame(on screen: NSScreen) -> NSRect {
+        let reserved = screen.frame.maxY - screen.visibleFrame.maxY
+        let height = reserved > 1 ? reserved : max(NSStatusBar.system.thickness, 22)
+        // Stay inside the menu-bar band. Never extend into the content
+        // area where WPS/Excel ribbon buttons live.
+        return NSRect(
             x: screen.frame.minX,
-            y: screen.visibleFrame.maxY - height,
+            y: screen.frame.maxY - height,
             width: screen.frame.width,
             height: height
         )
-        let panel = NSPanel(
+    }
+}
+
+final class BarWindow {
+    let window: ClickThroughPanel
+    private let view: BarView
+
+    init(screen: NSScreen) {
+        let frame = BarPlacement.frame(on: screen)
+        let panel = ClickThroughPanel(
             contentRect: frame,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
-        panel.isFloatingPanel = true
+        panel.isFloatingPanel = false
         panel.becomesKeyOnlyIfNeeded = true
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
-        panel.ignoresMouseEvents = true
         panel.isMovable = false
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.sharingType = .readOnly
+        panel.acceptsMouseMovedEvents = false
+        panel.animationBehavior = .none
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        // Set last: NSPanel.floating can reset level back to 3.
         panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 2)
 
         let barView = BarView(frame: NSRect(origin: .zero, size: frame.size))
         panel.contentView = barView
+        panel.setContentSize(frame.size)
         panel.setFrame(frame, display: true)
         panel.orderFrontRegardless()
+        panel.ignoresMouseEvents = true
 
         self.window = panel
         self.view = barView
+        enforceClickThrough()
+        appendLog("placement height=\(frame.height) y=\(frame.origin.y) ignoresMouse=\(panel.ignoresMouseEvents)")
     }
 
     func update(line: String, ratio: Double?, isError: Bool) {
         view.update(line: line, ratio: ratio, isError: isError)
+        enforceClickThrough()
+    }
+
+    private func enforceClickThrough() {
+        window.ignoresMouseEvents = true
+        window.acceptsMouseMovedEvents = false
+        window.ignoresMouseEvents = true
     }
 }
 
 final class BarView: NSView {
-    private let accent = NSView()
     private let progressTrack = NSView()
     private let progressFill = NSView()
+    private let pill = NSView()
     private let label = NSTextField(labelWithString: "")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor(calibratedWhite: 0.07, alpha: 0.90).cgColor
+        layer?.backgroundColor = NSColor.clear.cgColor
 
-        accent.wantsLayer = true
         progressTrack.wantsLayer = true
         progressFill.wantsLayer = true
-        progressTrack.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        progressTrack.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.18).cgColor
 
-        label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        pill.wantsLayer = true
+        pill.layer?.backgroundColor = NSColor(calibratedWhite: 0.07, alpha: 0.82).cgColor
+        pill.layer?.cornerRadius = 8
+
+        label.font = NSFont.systemFont(ofSize: 11, weight: .medium)
         label.textColor = NSColor.white.withAlphaComponent(0.96)
         label.alignment = .center
         label.lineBreakMode = .byTruncatingMiddle
         label.backgroundColor = .clear
         label.isBezeled = false
         label.drawsBackground = false
+        label.isEditable = false
+        label.isSelectable = false
+        label.isEnabled = false
+        label.refusesFirstResponder = true
 
-        [accent, progressTrack, progressFill, label].forEach {
+        [progressTrack, progressFill, pill, label].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
 
         NSLayoutConstraint.activate([
-            accent.leadingAnchor.constraint(equalTo: leadingAnchor),
-            accent.topAnchor.constraint(equalTo: topAnchor),
-            accent.bottomAnchor.constraint(equalTo: bottomAnchor),
-            accent.widthAnchor.constraint(equalToConstant: 4),
-
-            label.leadingAnchor.constraint(equalTo: accent.trailingAnchor, constant: 10),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -1),
-
             progressTrack.leadingAnchor.constraint(equalTo: leadingAnchor),
             progressTrack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            progressTrack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            progressTrack.topAnchor.constraint(equalTo: topAnchor),
             progressTrack.heightAnchor.constraint(equalToConstant: 2),
 
             progressFill.leadingAnchor.constraint(equalTo: progressTrack.leadingAnchor),
             progressFill.topAnchor.constraint(equalTo: progressTrack.topAnchor),
             progressFill.bottomAnchor.constraint(equalTo: progressTrack.bottomAnchor),
+
+            pill.centerXAnchor.constraint(equalTo: centerXAnchor),
+            pill.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 1),
+            pill.heightAnchor.constraint(equalToConstant: 20),
+
+            label.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 10),
+            label.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -10),
+            label.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
         ])
         progressFillWidth = progressFill.widthAnchor.constraint(equalToConstant: 0)
         progressFillWidth.isActive = true
@@ -208,12 +245,22 @@ final class BarView: NSView {
     private var progressFillWidth: NSLayoutConstraint!
     private var currentRatio: Double?
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override var acceptsFirstResponder: Bool { false }
+    override var acceptsTouchEvents: Bool {
+        get { false }
+        set {}
+    }
+
     func update(line: String, ratio: Double?, isError: Bool) {
         label.stringValue = line
         currentRatio = isError ? nil : ratio
         let color = accentColor(ratio: ratio, isError: isError)
-        accent.layer?.backgroundColor = color.cgColor
         progressFill.layer?.backgroundColor = color.cgColor
+        pill.layer?.backgroundColor = NSColor(calibratedWhite: 0.07, alpha: isError ? 0.88 : 0.82).cgColor
         progressFillWidth.constant = bounds.width * CGFloat(currentRatio ?? 0)
         layoutSubtreeIfNeeded()
     }
@@ -237,5 +284,6 @@ final class BarView: NSView {
     override func layout() {
         super.layout()
         progressFillWidth.constant = bounds.width * CGFloat(currentRatio ?? 0)
+        pill.layer?.cornerRadius = 8
     }
 }
